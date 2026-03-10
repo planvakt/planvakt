@@ -1,0 +1,7 @@
+requests
+beautifulsoup4
+google-generativeai
+supabase
+python-dotenv
+PyPDF2
+playwright
