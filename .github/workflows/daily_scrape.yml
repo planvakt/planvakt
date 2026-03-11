@@ -24,17 +24,21 @@ jobs:
         with:
           python-version: '3.10'
 
+      - name: Upgrade pip
+        run: pip install --upgrade pip
+
       - name: Install dependencies
         run: pip install -r backend/requirements.txt
 
       - name: Install Playwright and Chromium
-        run: python -m playwright install chromium
+        run: python -m playwright install chromium --with-deps
 
       - name: Run scraper
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
         run: python backend/scraper.py
 
       - name: Run matchmaker

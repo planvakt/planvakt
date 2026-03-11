@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from playwright.async_api import async_playwright
 from PyPDF2 import PdfReader
 from supabase import create_client
-from google import genai
+import google.generativeai as genai
 
 from analyzer import run_full_analysis
 from utils import generate_content_with_retry
@@ -31,7 +31,7 @@ ASKER_PORTAL_BASE = "https://asker-bygg.innsynsportal.no"
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SERVICE_KEY")
 api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-gemini_client = genai.Client(api_key=api_key)
+genai.configure(api_key=api_key)
 BOUNCER_MODEL = "gemini-2.5-flash"
 
 MAX_ROWS = 20
@@ -84,7 +84,7 @@ def is_it_gold(page1_text: str) -> bool:
             "Output: Always respond with ONLY 'JA' or 'NEI'.\n\n"
             "TEXT (Page 1):\n" + (page1_text[:12000] or "")
         )
-        res = generate_content_with_retry(gemini_client, BOUNCER_MODEL, prompt)
+        res = generate_content_with_retry(BOUNCER_MODEL, prompt, api_key)
         status = (res.text or "").strip().upper()
         return "JA" in status
     except Exception as e:

@@ -11,8 +11,7 @@ from urllib.parse import quote
 
 from dotenv import load_dotenv
 from supabase import create_client
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 import resend
 
 from utils import generate_content_with_retry
@@ -46,7 +45,6 @@ def get_supabase():
 def ai_match_check(lead: dict) -> tuple[int | None, str | None, str | None, str]:
     """Use Gemini 2.5 Flash to score lead vs criteria. Returns (score, reason_nb, analysis_norwegian, lokasjon) or (None, None, None, "").
     All text in the response MUST be in Norwegian (Bokmål). Also extracts address/property identifier for Maps."""
-    client = genai.Client(api_key=GEMINI_API_KEY)
     title = lead.get("title") or "Untitled"
     analysis = lead.get("ai_summary") or lead.get("ai_analysis") or "Ingen sammendrag."
 
@@ -77,10 +75,10 @@ Eksempel: {{"match_score": 85, "match_reason": "Ny boligutbygging i Asker.", "sa
 
     try:
         res = generate_content_with_retry(
-            client,
             MODEL_NAME,
             prompt,
-            config=types.GenerateContentConfig(response_mime_type="application/json"),
+            GEMINI_API_KEY,
+            generation_config=genai.types.GenerationConfig(response_mime_type="application/json"),
         )
         data = json.loads((res.text or "").strip())
         score = data.get("match_score")

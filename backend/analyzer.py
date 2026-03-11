@@ -3,8 +3,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from PyPDF2 import PdfReader
 from supabase import create_client
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 
 from utils import generate_content_with_retry
 
@@ -13,7 +12,7 @@ _root = Path(__file__).resolve().parent.parent
 load_dotenv(_root / ".env")
 
 api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-client = genai.Client(api_key=api_key)
+genai.configure(api_key=api_key)
 supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 
 GATEKEEPER_MODEL = "gemini-2.5-flash"
@@ -69,9 +68,7 @@ def run_full_analysis(url, municipality_name):
         "Say JA only if this document is relevant to property development (eiendomsutvikling). "
         "Otherwise say NEI.\n\nTEXT:\n" + (gatekeeper_text[:15000] or "")
     )
-    gatekeeper_res = generate_content_with_retry(
-        client, GATEKEEPER_MODEL, gatekeeper_prompt,
-    )
+    gatekeeper_res = generate_content_with_retry(GATEKEEPER_MODEL, gatekeeper_prompt, api_key)
     status = (gatekeeper_res.text or "").strip().upper()
     print(f"🎯 Gatekeeper: {status}")
 
@@ -99,8 +96,10 @@ def run_full_analysis(url, municipality_name):
         f"TEXT:\n{(full_context[:40000] or '')}"
     )
     expert_res = generate_content_with_retry(
-        client, EXPERT_MODEL, expert_prompt,
-        config=types.GenerateContentConfig(response_mime_type="application/json"),
+        EXPERT_MODEL,
+        expert_prompt,
+        api_key,
+        generation_config=genai.types.GenerationConfig(response_mime_type="application/json"),
     )
     raw = (expert_res.text or "").strip()
     try:
