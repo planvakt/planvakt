@@ -86,11 +86,16 @@ def run_full_analysis(url, municipality_name):
         full_context = gatekeeper_text
 
     expert_prompt = (
-        f"You are an expert analyst. Use this municipality profile as context for scoring and summarising:\n\n"
+        f"You are an expert analyst. Use this municipality profile as context for scoring and summarising.\n\n"
         f"PROFILE:\n{profile_text}\n\n"
-        f"Analyse the following document and respond with a single JSON object with exactly these keys: "
-        f"prosjekt_navn (string), score (integer 1–10), beskrivelse (string summary), gnr_bnr (string or null), kategori (string). "
-        f"Base the score and summary on how well the document fits the profile and property development relevance.\n\n"
+        f"Analyse the document and extract the following. Return a single JSON object with these keys:\n\n"
+        f"1. Lokalisering (prioritet):\n"
+        f"   - property_address (string eller null): Full gateadresse hvis funnet (f.eks. 'Storgata 1, Asker'). Søk etter adresse først.\n"
+        f"   - Hvis ingen adresse: gnr (integer eller null) = gårdsnummer, bnr (integer eller null) = bruksnummer, kommune (string eller null) = kommunenavn.\n"
+        f"   - gnr_bnr (string eller null): Formatert som 'Gnr X, Bnr Y' hvis du har gnr/bnr, ellers null.\n"
+        f"2. Søker: applicant_name (string eller null) = tiltakshaver/søker/ansvarlig. org_nr (string eller null) = organisasjonsnummer (kun siffer).\n"
+        f"3. Analyse: prosjekt_navn (string), score (integer 1–10), beskrivelse (string sammendrag), kategori (string).\n\n"
+        f"Returner KUN JSON med nøklene: prosjekt_navn, score, beskrivelse, gnr_bnr, kategori, property_address, gnr, bnr, kommune, applicant_name, org_nr.\n\n"
         f"TEXT:\n{(full_context[:40000] or '')}"
     )
     expert_res = generate_content_with_retry(
@@ -104,6 +109,10 @@ def run_full_analysis(url, municipality_name):
         print(f"⚠️ Expert returned invalid JSON, skipping save. Raw: {raw[:200]}...")
         return
 
+    gnr, bnr = details.get("gnr"), details.get("bnr")
+    if gnr is not None and bnr is not None and not details.get("gnr_bnr"):
+        details["gnr_bnr"] = f"Gnr {gnr}, Bnr {bnr}"
+
     # 4. Final save: upsert on url so we don't get duplicate leads
     payload = {
         "url": url,
@@ -113,6 +122,12 @@ def run_full_analysis(url, municipality_name):
         "ai_score": details.get("score"),
         "gnr_bnr": details.get("gnr_bnr"),
         "municipality_id": m_id,
+        "property_address": details.get("property_address"),
+        "gnr": gnr,
+        "bnr": bnr,
+        "kommune": details.get("kommune"),
+        "applicant_name": details.get("applicant_name"),
+        "org_nr": details.get("org_nr"),
     }
     supabase.table("leads").upsert(payload, on_conflict="url").execute()
     print(f"✅ Result saved: {details.get('prosjekt_navn')}")
