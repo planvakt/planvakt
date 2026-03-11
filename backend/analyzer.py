@@ -90,12 +90,12 @@ def run_full_analysis(url, municipality_name):
         f"PROFILE:\n{profile_text}\n\n"
         f"Analyse the document and extract the following. Return a single JSON object with these keys:\n\n"
         f"1. Lokalisering (prioritet):\n"
-        f"   - property_address (string eller null): Full gateadresse hvis funnet (f.eks. 'Storgata 1, Asker'). Søk etter adresse først.\n"
+        f"   - address (string eller null): Full gateadresse hvis funnet (f.eks. 'Storgata 1, Asker'). Søk etter adresse først.\n"
         f"   - Hvis ingen adresse: gnr (integer eller null) = gårdsnummer, bnr (integer eller null) = bruksnummer, kommune (string eller null) = kommunenavn.\n"
         f"   - gnr_bnr (string eller null): Formatert som 'Gnr X, Bnr Y' hvis du har gnr/bnr, ellers null.\n"
         f"2. Søker: applicant_name (string eller null) = tiltakshaver/søker/ansvarlig. org_nr (string eller null) = organisasjonsnummer (kun siffer).\n"
         f"3. Analyse: prosjekt_navn (string), score (integer 1–10), beskrivelse (string sammendrag), kategori (string).\n\n"
-        f"Returner KUN JSON med nøklene: prosjekt_navn, score, beskrivelse, gnr_bnr, kategori, property_address, gnr, bnr, kommune, applicant_name, org_nr.\n\n"
+        f"Returner KUN JSON med nøklene: prosjekt_navn, score, beskrivelse, gnr_bnr, kategori, address, gnr, bnr, kommune, applicant_name, org_nr.\n\n"
         f"TEXT:\n{(full_context[:40000] or '')}"
     )
     expert_res = generate_content_with_retry(
@@ -122,7 +122,7 @@ def run_full_analysis(url, municipality_name):
         "ai_score": details.get("score"),
         "gnr_bnr": details.get("gnr_bnr"),
         "municipality_id": m_id,
-        "property_address": details.get("property_address"),
+        "address": details.get("address"),
         "gnr": gnr,
         "bnr": bnr,
         "kommune": details.get("kommune"),

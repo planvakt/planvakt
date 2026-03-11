@@ -97,7 +97,7 @@ Eksempel: {{"match_score": 85, "match_reason": "Ny boligutbygging i Asker.", "sa
 
 def _email_title_from_lead(lead: dict) -> str:
     """H1 title priority: 1) Gateadresse, 2) Gnr X, Bnr Y, Kommune, 3) Saksittel."""
-    addr = (lead.get("property_address") or "").strip()
+    addr = (lead.get("address") or "").strip()
     if addr:
         return addr
     gnr, bnr = lead.get("gnr"), lead.get("bnr")
@@ -109,8 +109,8 @@ def _email_title_from_lead(lead: dict) -> str:
 
 
 def _maps_query_from_lead(lead: dict, ai_lokasjon: str = "") -> str:
-    """Location for Google Maps: property_address, else Gnr/Bnr + Kommune, else AI lokasjon."""
-    addr = (lead.get("property_address") or "").strip()
+    """Location for Google Maps: address, else Gnr/Bnr + Kommune, else AI lokasjon."""
+    addr = (lead.get("address") or "").strip()
     if addr:
         return addr
     gnr, bnr = lead.get("gnr"), lead.get("bnr")
