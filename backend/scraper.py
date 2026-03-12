@@ -1,17 +1,19 @@
+from dotenv import load_dotenv
+import os
+# .env i planvakt/ (mappen over backend/) – absolutt sti uavhengig av cwd
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
+load_dotenv(os.path.abspath(_env_path))
 """
 Scraper module: Asker municipality 'Plan og bygg' postliste via Playwright.
-Final flow: portal → Postliste plan og bygg → Søk → sort by Dokumentdato → extract first 5 rows → AI & DB.
+Final flow: portal → Postliste plan og bygg → Søk → sort by Dato → extract rows → AI & DB.
 """
-
 import asyncio
 import io
-import os
 import re
-from pathlib import Path
+from typing import Optional, List, Union
 from urllib.parse import urljoin
 
 import requests
-from dotenv import load_dotenv
 from playwright.async_api import async_playwright
 from PyPDF2 import PdfReader
 from supabase import create_client
@@ -19,10 +21,6 @@ from google import genai
 
 from analyzer import run_full_analysis
 from utils import generate_content_with_retry
-
-# Load .env from project root (parent of backend/) or from backend/
-_root = Path(__file__).resolve().parent.parent
-load_dotenv(_root / ".env")
 
 # Asker portal (fixed URL for initial navigation and for resolving relative PDF links)
 ASKER_PORTAL_BASE = "https://asker-bygg.innsynsportal.no"
@@ -48,7 +46,7 @@ def url_exists_in_leads(pdf_url: str) -> bool:
         return False
 
 
-def get_pdf_page1_text(pdf_url: str) -> str | None:
+def get_pdf_page1_text(pdf_url: str) -> Optional[str]:
     """Download PDF and extract text from page 1 only."""
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
@@ -63,7 +61,7 @@ def get_pdf_page1_text(pdf_url: str) -> str | None:
         return None
 
 
-def is_it_gold(page1_text: str, pdf_url: str | None = None) -> bool:
+def is_it_gold(page1_text: str, pdf_url: Optional[str] = None) -> bool:
     """Smart Filter (Gemini Flash): return True (JA) if document may be a real estate development opportunity."""
     if not page1_text:
         return False
@@ -96,7 +94,7 @@ def is_it_gold(page1_text: str, pdf_url: str | None = None) -> bool:
 
 
 async def run_asker_plan_og_bygg():
-    """Final Asker logic: portal → Postliste plan og bygg → Søk → Dokumentdato → first 5 rows → AI & DB."""
+    """Final Asker logic: portal → Postliste plan og bygg → Søk → Dato sort → rows → AI & DB."""
     print(f"📍 Initial navigation: {ASKER_PORTAL_BASE}/")
 
     async with async_playwright() as p:
@@ -107,7 +105,7 @@ async def run_asker_plan_og_bygg():
         try:
             # --- Initial Navigation ---
             await page.goto(ASKER_PORTAL_BASE + "/", wait_until="networkidle", timeout=45000)
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
 
             # --- Step 1 - Enter Portal: click 'Postliste plan- og bygg' (regex allows dash/spaces/casing) ---
             postliste_locator = page.get_by_text(re.compile(r"Postliste plan.*bygg", re.IGNORECASE)).first
@@ -121,25 +119,47 @@ async def run_asker_plan_og_bygg():
             await page.locator('button[type="submit"]:has-text("Søk")').first.click(timeout=15000)
             await page.wait_for_selector("table", timeout=15000)
             await page.wait_for_load_state("networkidle", timeout=30000)
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
 
-            # --- Step 3 - Sort: click Dokumentdato (newest first) ---
-            await page.locator('button:has-text("Dokumentdato")').first.click(timeout=15000)
-            await page.wait_for_load_state("networkidle", timeout=30000)
+            # --- Step 3 - Sort: Dato-knapp, klikk én gang, sjekk om mars 2026 i første rad; ellers klikk igjen ---
+            button_selector = 'button:has(div:text-is("Dato"))'
+            await page.locator(button_selector).wait_for(state="visible", timeout=15000)
+            await page.locator(button_selector).click(timeout=15000)
             await asyncio.sleep(2)
+            first_row_text = None
+            try:
+                first_row_text = await page.locator("table tbody tr").first.text_content()
+                print("DEBUG: Første rad etter første klikk: {}".format((first_row_text or "")[:250]))
+            except Exception as e:
+                print("DEBUG: Kunne ikke hente første rad: {}".format(e))
+            # Hvis første rad ikke ser ut som mars 2026, klikk én gang til for å snu sorteringen
+            if first_row_text and "2026" in first_row_text and ("mars" in first_row_text.lower() or ".03." in first_row_text or "03.2026" in first_row_text):
+                print("DEBUG: Første rad ser ut som mars 2026 – beholder sortering.")
+            else:
+                print("DEBUG: Første rad er ikke mars 2026 – klikker Dato igjen for descending.")
+                await page.locator(button_selector).click(timeout=15000)
+                await asyncio.sleep(2)
+            print("Sortert på Dato (nyeste først).")
 
-            # --- Step 4 - Extract: up to MAX_ROWS (newest first, already sorted by Dokumentdato) ---
+            # --- Step 4 - Extract top MAX_ROWS (newest first) ---
             await page.locator("table tbody tr").first.wait_for(state="visible", timeout=15000)
-            await asyncio.sleep(1)
-
+            await asyncio.sleep(0.5)
             rows = await page.locator("table tbody tr").all()
             if not rows:
-                print("❌ No table rows found.")
+                print("No table rows found.")
                 await browser.close()
                 return
 
+
             top_rows = rows[:MAX_ROWS]
-            print(f"📋 Processing up to {len(top_rows)} rows (newest first).")
+            print("Processing up to {} rows (newest first).".format(len(top_rows)))
+            # Skriv ut de 5 øverste saksnumrene/radene så vi ser hva skraperen ser
+            for i in range(min(5, len(top_rows))):
+                try:
+                    row_text = await top_rows[i].text_content()
+                    print("  Rad {} (øverst): {}".format(i + 1, (row_text or "")[:180]))
+                except Exception as e:
+                    print("  Rad {}: kunne ikke hente tekst: {}".format(i + 1, e))
 
             for i, row in enumerate(top_rows):
                 try:

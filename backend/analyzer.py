@@ -1,6 +1,13 @@
-import io, json, os, requests
-from pathlib import Path
 from dotenv import load_dotenv
+import os
+from typing import Optional, List, Union
+# .env i planvakt/ (mappen over backend/) – absolutt sti uavhengig av cwd
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
+load_dotenv(os.path.abspath(_env_path))
+
+import io
+import json
+import requests
 from PyPDF2 import PdfReader
 from supabase import create_client
 from google import genai
@@ -8,13 +15,20 @@ from google.genai import types
 
 from utils import generate_content_with_retry
 
-# --- 1. SETUP ---
-_root = Path(__file__).resolve().parent.parent
-load_dotenv(_root / ".env")
-
+# --- SETUP (klienter opprettes lazy via get_supabase() så env er lastet) ---
 api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
 client = genai.Client(api_key=api_key)
-supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+
+_supabase = None
+
+def get_supabase():
+    global _supabase
+    if _supabase is None:
+        url = os.getenv("SUPABASE_URL")
+        key = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SERVICE_KEY")
+        print(f"DEBUG: URL er {'satt' if url else 'TOM'}, KEY er {'satt' if key else 'TOM'}")
+        _supabase = create_client(url, key)
+    return _supabase
 
 GATEKEEPER_MODEL = "gemini-2.5-flash"
 EXPERT_MODEL = "gemini-2.5-pro"
@@ -24,7 +38,7 @@ def get_municipality_by_name(name):
     """Search municipalities table for a record where name matches the input (e.g. 'Asker').
     Returns (id, profile_text) or (None, None)."""
     try:
-        res = supabase.table("municipalities").select("id, profile_text").eq("name", name.strip()).execute()
+        res = get_supabase().table("municipalities").select("id, profile_text").eq("name", name.strip()).execute()
         if res.data and len(res.data) > 0:
             row = res.data[0]
             return row["id"], (row.get("profile_text") or "")
@@ -162,7 +176,7 @@ def run_full_analysis(url, municipality_name):
         "is_gold": True,
         "email_sent": False,
     }
-    supabase.table("leads").upsert(payload, on_conflict="url").execute()
+    get_supabase().table("leads").upsert(payload, on_conflict="url").execute()
     print(f"✅ Result saved: {details.get('title')}")
 
 
