@@ -1,10 +1,9 @@
 """
 Shared utilities for the backend (e.g. Gemini API retry on 503).
-Uses google.generativeai (genai.configure, GenerativeModel).
+Uses google.genai (genai.Client, client.models.generate_content).
 """
 
 import time
-import google.generativeai as genai
 
 
 def is_503_or_unavailable(exc: Exception) -> bool:
@@ -13,21 +12,19 @@ def is_503_or_unavailable(exc: Exception) -> bool:
     return "503" in msg or "unavailable" in msg or "service is currently unavailable" in msg
 
 
-def generate_content_with_retry(model_name: str, contents: str, api_key: str, generation_config=None):
+def generate_content_with_retry(client, model_name: str, contents: str, config=None):
     """
-    Call genai.GenerativeModel(model_name).generate_content with a simple retry on 503.
-    Uses google.generativeai: genai.configure(api_key), then GenerativeModel(...).generate_content(...).
-    On 503: wait 10 seconds, try once more. Returns the response (has .text).
+    Call client.models.generate_content with a simple retry on 503.
+    client: genai.Client(api_key=...). On 503: wait 10 seconds, try once more.
+    Returns the response (has .text).
     """
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(model_name)
     last_err = None
     for attempt in range(2):
         try:
-            kwargs = {}
-            if generation_config is not None:
-                kwargs["generation_config"] = generation_config
-            return model.generate_content(contents, **kwargs)
+            kwargs = {"model": model_name, "contents": contents}
+            if config is not None:
+                kwargs["config"] = config
+            return client.models.generate_content(**kwargs)
         except Exception as e:
             last_err = e
             if is_503_or_unavailable(e) and attempt == 0:

@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from playwright.async_api import async_playwright
 from PyPDF2 import PdfReader
 from supabase import create_client
-import google.generativeai as genai
+from google import genai
 
 from analyzer import run_full_analysis
 from utils import generate_content_with_retry
@@ -31,7 +31,7 @@ ASKER_PORTAL_BASE = "https://asker-bygg.innsynsportal.no"
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SERVICE_KEY")
 api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-genai.configure(api_key=api_key)
+gemini_client = genai.Client(api_key=api_key)
 BOUNCER_MODEL = "gemini-2.5-flash"
 
 MAX_ROWS = 20
@@ -63,29 +63,32 @@ def get_pdf_page1_text(pdf_url: str) -> str | None:
         return None
 
 
-def is_it_gold(page1_text: str) -> bool:
-    """Gemini Flash 'is_it_gold' check: return True (JA) only if real estate development potential."""
+def is_it_gold(page1_text: str, pdf_url: str | None = None) -> bool:
+    """Smart Filter (Gemini Flash): return True (JA) if document may be a real estate development opportunity."""
     if not page1_text:
         return False
     try:
         prompt = (
-            "Goal: Identify leads with real estate development potential.\n\n"
-            "SAY 'JA' ONLY IF:\n"
-            "- It involves new residential or commercial buildings (nybygg).\n"
-            "- It involves 'Omregulering' (rezoning) or 'Dispensasjon' (exemptions).\n"
-            "- It involves dividing a property (deling av eiendom) or new plots.\n"
-            "- It involves large extensions (tilbygg) that significantly increase value.\n"
-            "- The title suggests something bigger than just maintenance.\n\n"
-            "SAY 'NEI' IF:\n"
-            "- It is only about water/sewer (vann og avløp) for existing houses.\n"
-            "- It is only about minor maintenance, paint, or solar panels.\n"
-            "- It is a very small project like a standard shed (bod), fence (gjerde), or minor interior changes.\n"
-            "- It's a standard 'ferdigattest' (completion certificate) for a project that is already finished.\n\n"
-            "Output: Always respond with ONLY 'JA' or 'NEI'.\n\n"
+            "You are a smart document screener for a property investor. Your job is to decide if a document represents a potential real estate development opportunity.\n\n"
+            "When to say JA:\n"
+            "If it involves new residential or commercial buildings (nybygg, enebolig, flermannsbolig).\n"
+            "If it involves dividing land or creating new plots (deling av eiendom, fradeling).\n"
+            "If it involves zoning plans (reguleringsplan, planinitiativ).\n"
+            "If it involves changing the use of a building (bruksendring, seksjonering).\n"
+            "If it is a pre-conference (forhåndskonferanse) for a potential new project.\n"
+            "CRITICAL: If you are in doubt, or if there is ANY potential for value creation, say JA.\n\n"
+            "When to say NEI (Strict Blacklist):\n"
+            "Minor private upgrades: Frittstående garasje, carport, uthus, bod, gjerde, støttemur, terrasse.\n"
+            "Trouble/Rejections: Avslag, avvisning, klage, tilsyn, ulovlighetsoppfølging, varsel om pålegg.\n"
+            "Pure Admin: Ansvarsrett, godkjenning av foretak, lokal godkjenning, melding til tinglysing.\n"
+            "Infrastructure: Nettstasjon, trafo, rør, graving, kabel.\n"
+            "End of project: Ferdigattest, brukstillatelse (the project is already finished, no opportunity left).\n\n"
+            "Output format: You must output ONLY the word 'JA' or 'NEI'. No markdown, no punctuation, no other text.\n\n"
             "TEXT (Page 1):\n" + (page1_text[:12000] or "")
         )
-        res = generate_content_with_retry(BOUNCER_MODEL, prompt, api_key)
+        res = generate_content_with_retry(gemini_client, BOUNCER_MODEL, prompt)
         status = (res.text or "").strip().upper()
+        print(f"DEBUG: AI says '{status}' for {pdf_url or 'N/A'}")
         return "JA" in status
     except Exception as e:
         print(f"⚠️ Bouncer API error: {e}")
@@ -169,7 +172,7 @@ async def run_asker_plan_og_bygg():
                         print(f"  ⏭️ Row {i+1}: Could not extract PDF text, skipping.")
                         continue
 
-                    if not is_it_gold(page1_text):
+                    if not is_it_gold(page1_text, pdf_url):
                         print(f"  ⏭️ Row {i+1}: Bouncer said NEI, skipping.")
                         await asyncio.sleep(2)
                         continue

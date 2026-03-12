@@ -3,7 +3,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from PyPDF2 import PdfReader
 from supabase import create_client
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 from utils import generate_content_with_retry
 
@@ -12,7 +13,7 @@ _root = Path(__file__).resolve().parent.parent
 load_dotenv(_root / ".env")
 
 api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-genai.configure(api_key=api_key)
+client = genai.Client(api_key=api_key)
 supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 
 GATEKEEPER_MODEL = "gemini-2.5-flash"
@@ -64,11 +65,24 @@ def run_full_analysis(url, municipality_name):
         return
 
     gatekeeper_prompt = (
-        "You must answer with exactly one word: JA or NEI. "
-        "Say JA only if this document is relevant to property development (eiendomsutvikling). "
-        "Otherwise say NEI.\n\nTEXT:\n" + (gatekeeper_text[:15000] or "")
+        "You are a smart document screener for a property investor. Your job is to decide if a document represents a potential real estate development opportunity.\n\n"
+        "When to say JA:\n"
+        "If it involves new residential or commercial buildings (nybygg, enebolig, flermannsbolig).\n"
+        "If it involves dividing land or creating new plots (deling av eiendom, fradeling).\n"
+        "If it involves zoning plans (reguleringsplan, planinitiativ).\n"
+        "If it involves changing the use of a building (bruksendring, seksjonering).\n"
+        "If it is a pre-conference (forhåndskonferanse) for a potential new project.\n"
+        "CRITICAL: If you are in doubt, or if there is ANY potential for value creation, say JA.\n\n"
+        "When to say NEI (Strict Blacklist):\n"
+        "Minor private upgrades: Frittstående garasje, carport, uthus, bod, gjerde, støttemur, terrasse.\n"
+        "Trouble/Rejections: Avslag, avvisning, klage, tilsyn, ulovlighetsoppfølging, varsel om pålegg.\n"
+        "Pure Admin: Ansvarsrett, godkjenning av foretak, lokal godkjenning, melding til tinglysing.\n"
+        "Infrastructure: Nettstasjon, trafo, rør, graving, kabel.\n"
+        "End of project: Ferdigattest, brukstillatelse (the project is already finished, no opportunity left).\n\n"
+        "Output format: You must output ONLY the word 'JA' or 'NEI'. No markdown, no punctuation, no other text.\n\n"
+        "TEXT:\n" + (gatekeeper_text[:15000] or "")
     )
-    gatekeeper_res = generate_content_with_retry(GATEKEEPER_MODEL, gatekeeper_prompt, api_key)
+    gatekeeper_res = generate_content_with_retry(client, GATEKEEPER_MODEL, gatekeeper_prompt)
     status = (gatekeeper_res.text or "").strip().upper()
     print(f"🎯 Gatekeeper: {status}")
 
@@ -83,23 +97,26 @@ def run_full_analysis(url, municipality_name):
         full_context = gatekeeper_text
 
     expert_prompt = (
-        f"You are an expert analyst. Use this municipality profile as context for scoring and summarising.\n\n"
+        f"You are an expert analyst. Use this municipality profile as context.\n\n"
         f"PROFILE:\n{profile_text}\n\n"
-        f"Analyse the document and extract the following. Return a single JSON object with these keys:\n\n"
-        f"1. Lokalisering (prioritet):\n"
-        f"   - address (string eller null): Full gateadresse hvis funnet (f.eks. 'Storgata 1, Asker'). Søk etter adresse først.\n"
-        f"   - Hvis ingen adresse: gnr (integer eller null) = gårdsnummer, bnr (integer eller null) = bruksnummer, kommune (string eller null) = kommunenavn.\n"
-        f"   - gnr_bnr (string eller null): Formatert som 'Gnr X, Bnr Y' hvis du har gnr/bnr, ellers null.\n"
-        f"2. Søker: applicant_name (string eller null) = tiltakshaver/søker/ansvarlig. org_nr (string eller null) = organisasjonsnummer (kun siffer).\n"
-        f"3. Analyse: prosjekt_navn (string), score (integer 1–10), beskrivelse (string sammendrag), kategori (string).\n\n"
-        f"Returner KUN JSON med nøklene: prosjekt_navn, score, beskrivelse, gnr_bnr, kategori, address, gnr, bnr, kommune, applicant_name, org_nr.\n\n"
+        f"Extract from the document and return a single JSON object with EXACTLY these 9 keys (no other keys):\n"
+        f"- title: project/case title (string)\n"
+        f"- kommune: municipality name (string, e.g. Asker)\n"
+        f"- gnr: gårdsnummer as string (e.g. \"12\" or \"\" if not found)\n"
+        f"- bnr: bruksnummer as string (e.g. \"45\" or \"\" if not found)\n"
+        f"- adresse: full gateadresse if found (string, e.g. Storgata 1, Asker), else \"\"\n"
+        f"- soker: tiltakshaver/søker/ansvarlig name (string, or \"\" if not found)\n"
+        f"- ai_summary: short reasoning/summary of the case in Norwegian (string, 1–3 sentences)\n"
+        f"- ai_category: category of the case (string, e.g. reguleringsplan, byggesak, dispensasjon)\n"
+        f"- ai_score: how relevant this is for property development, integer 0–100 (100 = highly relevant)\n\n"
+        f"Return ONLY valid JSON with exactly these 9 keys. Use empty string \"\" for missing text fields.\n\n"
         f"TEXT:\n{(full_context[:40000] or '')}"
     )
     expert_res = generate_content_with_retry(
+        client,
         EXPERT_MODEL,
         expert_prompt,
-        api_key,
-        generation_config=genai.types.GenerationConfig(response_mime_type="application/json"),
+        config=types.GenerateContentConfig(response_mime_type="application/json"),
     )
     raw = (expert_res.text or "").strip()
     try:
@@ -108,28 +125,45 @@ def run_full_analysis(url, municipality_name):
         print(f"⚠️ Expert returned invalid JSON, skipping save. Raw: {raw[:200]}...")
         return
 
-    gnr, bnr = details.get("gnr"), details.get("bnr")
-    if gnr is not None and bnr is not None and not details.get("gnr_bnr"):
-        details["gnr_bnr"] = f"Gnr {gnr}, Bnr {bnr}"
+    # Normalise gnr/bnr to string
+    gnr = details.get("gnr")
+    bnr = details.get("bnr")
+    if gnr is not None and not isinstance(gnr, str):
+        gnr = str(gnr)
+    if bnr is not None and not isinstance(bnr, str):
+        bnr = str(bnr)
+    if gnr is None:
+        gnr = ""
+    if bnr is None:
+        bnr = ""
 
-    # 4. Final save: upsert on url so we don't get duplicate leads
+    # ai_score: integer 0–100
+    ai_score_val = details.get("ai_score")
+    if ai_score_val is not None and not isinstance(ai_score_val, int):
+        try:
+            ai_score_val = int(ai_score_val)
+        except (TypeError, ValueError):
+            ai_score_val = None
+    if ai_score_val is None or not (0 <= ai_score_val <= 100):
+        ai_score_val = 50
+
+    # 4. Final save: upsert on url (deduplication). Schema: url, title, kommune, gnr, bnr, adresse, soker, ai_summary, ai_category, ai_score, is_gold, email_sent
     payload = {
         "url": url,
-        "title": details.get("prosjekt_navn"),
-        "ai_summary": details.get("beskrivelse"),
-        "ai_category": details.get("kategori"),
-        "ai_score": details.get("score"),
-        "gnr_bnr": details.get("gnr_bnr"),
-        "municipality_id": m_id,
-        "address": details.get("address"),
+        "title": (details.get("title") or "").strip() or None,
+        "kommune": (details.get("kommune") or "").strip() or None,
         "gnr": gnr,
         "bnr": bnr,
-        "kommune": details.get("kommune"),
-        "applicant_name": details.get("applicant_name"),
-        "org_nr": details.get("org_nr"),
+        "adresse": (details.get("adresse") or "").strip() or None,
+        "soker": (details.get("soker") or "").strip() or None,
+        "ai_summary": (details.get("ai_summary") or "").strip() or None,
+        "ai_category": (details.get("ai_category") or "").strip() or None,
+        "ai_score": ai_score_val,
+        "is_gold": True,
+        "email_sent": False,
     }
     supabase.table("leads").upsert(payload, on_conflict="url").execute()
-    print(f"✅ Result saved: {details.get('prosjekt_navn')}")
+    print(f"✅ Result saved: {details.get('title')}")
 
 
 # --- RUN ---

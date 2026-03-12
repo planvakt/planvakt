@@ -11,7 +11,8 @@ from urllib.parse import quote
 
 from dotenv import load_dotenv
 from supabase import create_client
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import resend
 
 from utils import generate_content_with_retry
@@ -46,7 +47,7 @@ def ai_match_check(lead: dict) -> tuple[int | None, str | None, str | None, str]
     """Use Gemini 2.5 Flash to score lead vs criteria. Returns (score, reason_nb, analysis_norwegian, lokasjon) or (None, None, None, "").
     All text in the response MUST be in Norwegian (Bokmål). Also extracts address/property identifier for Maps."""
     title = lead.get("title") or "Untitled"
-    analysis = lead.get("ai_summary") or lead.get("ai_analysis") or "Ingen sammendrag."
+    analysis = lead.get("ai_summary") or "Ingen sammendrag."
 
     prompt = f"""Du er en investeringsrådgiver. Svara KUN på norsk (Bokmål).
 
@@ -73,12 +74,13 @@ Returner KUN et JSON-objekt med nøyaktig disse nøklene:
 Eksempel: {{"match_score": 85, "match_reason": "Ny boligutbygging i Asker.", "sammendrag_norsk": "Saken gjelder reguleringsplan...", "lokasjon": "Gnr 12, Bnr 45 i Asker"}}
 """
 
+    gemini_client = genai.Client(api_key=GEMINI_API_KEY)
     try:
         res = generate_content_with_retry(
+            gemini_client,
             MODEL_NAME,
             prompt,
-            GEMINI_API_KEY,
-            generation_config=genai.types.GenerationConfig(response_mime_type="application/json"),
+            config=types.GenerateContentConfig(response_mime_type="application/json"),
         )
         data = json.loads((res.text or "").strip())
         score = data.get("match_score")
@@ -94,8 +96,8 @@ Eksempel: {{"match_score": 85, "match_reason": "Ny boligutbygging i Asker.", "sa
 
 
 def _email_title_from_lead(lead: dict) -> str:
-    """H1 title priority: 1) Gateadresse, 2) Gnr X, Bnr Y, Kommune, 3) Saksittel."""
-    addr = (lead.get("address") or "").strip()
+    """H1 title priority: 1) Gateadresse (adresse), 2) Gnr X, Bnr Y, Kommune, 3) Saksittel."""
+    addr = (lead.get("adresse") or "").strip()
     if addr:
         return addr
     gnr, bnr = lead.get("gnr"), lead.get("bnr")
@@ -107,8 +109,8 @@ def _email_title_from_lead(lead: dict) -> str:
 
 
 def _maps_query_from_lead(lead: dict, ai_lokasjon: str = "") -> str:
-    """Location for Google Maps: address, else Gnr/Bnr + Kommune, else AI lokasjon."""
-    addr = (lead.get("address") or "").strip()
+    """Location for Google Maps: adresse, else Gnr/Bnr + Kommune, else AI lokasjon."""
+    addr = (lead.get("adresse") or "").strip()
     if addr:
         return addr
     gnr, bnr = lead.get("gnr"), lead.get("bnr")
@@ -128,18 +130,18 @@ def send_teigvis_email(lead: dict, score: int, reason_norwegian: str, analysis_n
 
     lead_url = lead.get("url") or "#"
     email_h1_title = _email_title_from_lead(lead)
+    kommune = (lead.get("kommune") or "Asker").strip() or "Asker"
     maps_query = _maps_query_from_lead(lead, lokasjon)
     address_found = maps_query or "Ikke angitt"
     maps_url = f"https://www.google.com/maps/search/?api=1&query={quote(maps_query)}" if maps_query else ""
     maps_button_html = f'<a href="{html.escape(maps_url)}" style="background-color: #f0f2f5; color: #333333; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block; border: 1px solid #dcdcdc; margin-left: 10px; margin-bottom: 10px;" target="_blank">Se i Google Maps</a>' if maps_url else ""
 
-    applicant_name = (lead.get("applicant_name") or "").strip() or "Ikke angitt"
-    org_nr = (lead.get("org_nr") or "").strip()
-    proff_q = org_nr or applicant_name if applicant_name != "Ikke angitt" else ""
+    soker = (lead.get("soker") or "").strip() or "Ikke angitt"
+    proff_q = soker if soker != "Ikke angitt" else ""
     proff_url = f"https://www.proff.no/bransjesøk?q={quote(proff_q)}" if proff_q else ""
     proff_section_html = f'<p style="margin-top: 12px;"><a href="{html.escape(proff_url)}" style="background-color: #f0f2f5; color: #333333; padding: 10px 20px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block; border: 1px solid #dcdcdc;" target="_blank">Sjekk selskap på Proff.no</a></p>' if proff_url else ""
 
-    subject = f"TeigVis Match: {email_h1_title[:40]}{'...' if len(email_h1_title) > 40 else ''}"
+    subject = f"Planvakt: Ny match i {kommune}"
 
     html_body = f"""
 <!DOCTYPE html>
@@ -162,14 +164,13 @@ def send_teigvis_email(lead: dict, score: int, reason_norwegian: str, analysis_n
 
     <div style="background-color: #f9f9f9; border: 1px solid #e0e0e0; padding: 20px; border-radius: 8px; margin-bottom: 25px;">
       <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: #666666; margin-bottom: 8px; font-weight: 600;">Søker</div>
-      <p style="margin: 0 0 6px 0; font-size: 16px; color: #333333;">{html.escape(applicant_name)}</p>
-      <p style="margin: 0; font-size: 16px; color: #333333;">Org.nr: {html.escape(org_nr or "—")}</p>
+      <p style="margin: 0; font-size: 16px; color: #333333;">{html.escape(soker)}</p>
       {proff_section_html}
     </div>
 
     <div style="background-color: #eef6fc; border: 1px solid #d0e3f0; padding: 20px; border-radius: 8px; margin-bottom: 25px;">
       <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: #007bff; margin-bottom: 5px; font-weight: 600;">Hvorfor dette er en match (Score: {score}/100)</div>
-      <p style="margin: 0; font-size: 16px; color: #2c3e50;">{html.escape(reason_norwegian)}</p>
+      <p style="margin: 0; font-size: 16px; color: #2c3e50; font-weight: bold;">{html.escape(reason_norwegian)}</p>
     </div>
 
     <div style="background-color: #f9f9f9; border: 1px solid #e0e0e0; padding: 20px; border-radius: 8px; margin-bottom: 25px;">
@@ -218,7 +219,7 @@ def run_matchmaker():
 
     supabase = get_supabase()
 
-    # 1. Fetch leads where email_sent is FALSE and is_gold is TRUE
+    # 1. Fetch leads where email_sent is FALSE and is_gold is TRUE (anti-spam: only ever email each lead once)
     print("🔍 Fetching leads where email_sent = FALSE and is_gold = TRUE...")
     try:
         r = supabase.table("leads").select("*").eq("email_sent", False).eq("is_gold", True).execute()
